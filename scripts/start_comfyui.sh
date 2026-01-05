@@ -48,7 +48,7 @@ setup_logging() {
     
     # Registrar inicio
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] === INICIANDO COMFYUI ===" >> "$LOG_FILE"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Script version: 2.1 (corregido)" >> "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Script version: 3.0 (con modo memoria)" >> "$LOG_FILE"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Fecha: $(date)" >> "$LOG_FILE"
 }
 
@@ -123,32 +123,6 @@ cleanup_old_logs() {
             find "$LOG_DIR" -name "comfyui_*.log" -type f 2>/dev/null | sort | head -n "$files_to_delete" | xargs rm -f 2>/dev/null
         fi
     fi
-}
-
-check_comfyui_version() {
-    log_message "INFO" "Verificando versión de ComfyUI..."
-    
-    cd "$COMFYUI_PROJECT"
-    
-    # Obtener ayuda para ver parámetros disponibles
-    local help_output
-    help_output=$(python main.py --help 2>&1 | head -50)
-    
-    # Verificar si --fp16 está obsoleto
-    if echo "$help_output" | grep -q "ambiguous option.*--fp16"; then
-        log_message "WARNING" "Parámetro --fp16 es ambiguo en esta versión"
-        log_message "INFO" "Usando parámetros específicos en lugar de --fp16"
-        return 1
-    fi
-    
-    # Verificar parámetros disponibles
-    if echo "$help_output" | grep -q "--fp16-unet"; then
-        log_message "INFO" "✓ Versión nueva de ComfyUI detectada"
-        return 0
-    fi
-    
-    log_message "INFO" "✓ Versión clásica de ComfyUI detectada"
-    return 0
 }
 
 # ============================================================================
@@ -247,10 +221,35 @@ main() {
     gpu_info=$(python -c "import torch; print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No GPU')" 2>/dev/null || echo "Error al obtener info GPU")
     log_message "INFO" "🖥️  $gpu_info"
     
-    # Verificar versión de ComfyUI
-    if ! check_comfyui_version; then
-        log_message "WARNING" "Se detectó versión nueva de ComfyUI con parámetros diferentes"
-    fi
+    # ============================================================================
+    # DETERMINAR MODO DE MEMORIA
+    # ============================================================================
+    # Obtener modo de memoria del primer argumento (si existe)
+    MEMORY_MODE="${1:-normalvram}"
+    
+    # Validar modo de memoria
+    case "$MEMORY_MODE" in
+        "lowvram")
+            MEMORY_ARG="--lowvram"
+            log_message "INFO" "Usando modo: Low VRAM (para GPUs con poca memoria)"
+            ;;
+        "normalvram")
+            MEMORY_ARG="--normalvram"
+            log_message "INFO" "Usando modo: Normal VRAM (recomendado para RTX 5060 8GB)"
+            ;;
+        "highvram")
+            MEMORY_ARG="--highvram"
+            log_message "INFO" "Usando modo: High VRAM (solo para GPUs con mucha memoria)"
+            ;;
+        "cpu")
+            MEMORY_ARG="--cpu"
+            log_message "INFO" "Usando modo: CPU (sin GPU)"
+            ;;
+        *)
+            MEMORY_ARG="--normalvram"
+            log_message "WARNING" "Modo '$MEMORY_MODE' no reconocido, usando Normal VRAM por defecto"
+            ;;
+    esac
     
     # ============================================================================
     # EJECUCIÓN DE COMFYUI
@@ -260,9 +259,10 @@ main() {
     log_message "INFO" "📂 Salidas: $COMFYUI_OUTPUTS"
     log_message "INFO" "🗑️  Temporal: $TEMP_DIR"
     log_message "INFO" "📝 Log: $LOG_FILE"
+    log_message "INFO" "💾 Modo memoria: $MEMORY_MODE ($MEMORY_ARG)"
     echo ""
     echo "=============================================="
-    echo "🚀 ComfyUI iniciando..."
+    echo "🚀 ComfyUI iniciando en modo $MEMORY_MODE..."
     echo "🌐 Abre http://localhost:$COMFYUI_PORT en tu navegador"
     echo "📝 Ver log completo: $LOG_FILE"
     echo "🛑 Presiona Ctrl+C para detener"
@@ -272,27 +272,17 @@ main() {
     # Capturar señal de interrupción para logging
     trap 'log_message "INFO" "ComfyUI detenido por el usuario"; exit 0' INT TERM
     
-    # Determinar parámetros basados en la versión
-    local comfyui_params="--listen $COMFYUI_HOST --port $COMFYUI_PORT --cuda-device $CUDA_DEVICE --highvram --output-directory $COMFYUI_OUTPUTS --temp-directory $TEMP_DIR"
+    # Ejecutar ComfyUI con el modo de memoria seleccionado
+    log_message "INFO" "Ejecutando ComfyUI con parámetros: $MEMORY_ARG --fp16-unet --fp16-vae --fp16-text-enc"
     
-    # Para versiones nuevas que no aceptan --fp16
-    # Probar diferentes combinaciones
-    log_message "INFO" "Probando parámetros de precisión..."
-    
-    # Intentar con parámetros específicos para nueva versión
-    local precision_params="--fp16-unet --fp16-vae --fp16-text-enc"
-    
-    log_message "INFO" "Ejecutando ComfyUI con parámetros: $comfyui_params $precision_params"
-    
-    # Ejecutar ComfyUI con redirección de output al log
     exec python main.py \
         --listen "$COMFYUI_HOST" \
         --port "$COMFYUI_PORT" \
         --cuda-device "$CUDA_DEVICE" \
+        $MEMORY_ARG \
         --fp16-unet \
         --fp16-vae \
         --fp16-text-enc \
-        --highvram \
         --output-directory "$COMFYUI_OUTPUTS" \
         --temp-directory "$TEMP_DIR" \
         2>&1 | while IFS= read -r line; do
@@ -326,4 +316,4 @@ trap 'handle_error ${LINENO}' ERR
 # ============================================================================
 # EJECUCIÓN PRINCIPAL
 # ============================================================================
-main
+main "$@"
